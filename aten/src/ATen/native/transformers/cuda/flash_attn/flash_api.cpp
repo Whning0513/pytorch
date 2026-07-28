@@ -6,6 +6,7 @@
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 
 #include <cstdint>
+#include <new>
 #include <tuple>
 #include <utility>
 
@@ -51,6 +52,11 @@ namespace FLASH_NAMESPACE {
 #define CHECK_DEVICE(x) TORCH_CHECK(x.is_cuda(), #x " must be on CUDA")
 #define CHECK_SHAPE(x, ...) TORCH_CHECK(x.sizes() == at::IntArrayRef({__VA_ARGS__}), #x " must have shape (" #__VA_ARGS__ ")")
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
+
+static_assert(sizeof(at::PhiloxCudaState) <= sizeof(Flash_fwd_params::philox_args),
+              "Flash_fwd_params::philox_args buffer is too small for at::PhiloxCudaState");
+static_assert(alignof(at::PhiloxCudaState) <= alignof(decltype(Flash_fwd_params::philox_args)),
+              "Flash_fwd_params::philox_args buffer is under-aligned for at::PhiloxCudaState");
 
 
 void set_params_fprop(Flash_fwd_params &params,
@@ -549,7 +555,7 @@ mha_fwd(const at::Tensor &q,         // batch_size x seqlen_q x num_heads x head
         at::PhiloxCudaState philox_state = gen->philox_cuda_state(counter_offset);
         rng_state = at::empty({2}, at::TensorOptions().dtype(c10::kUInt64).device(at::kCUDA));
         params.rng_state = reinterpret_cast<uint64_t*>(rng_state.data_ptr());
-        params.philox_args = philox_state;
+        new (params.philox_args) at::PhiloxCudaState(philox_state);
     }
 
     set_params_alibi(params, alibi_slopes_, batch_size, num_heads);
@@ -788,7 +794,7 @@ mha_varlen_fwd(const at::Tensor &q,  // total_q x num_heads x head_size, total_q
         at::PhiloxCudaState philox_state = gen->philox_cuda_state(counter_offset);
         rng_state = at::empty({2}, at::TensorOptions().dtype(c10::kUInt64).device(at::kCUDA));
         params.rng_state = reinterpret_cast<uint64_t*>(rng_state.data_ptr());
-        params.philox_args = philox_state;
+        new (params.philox_args) at::PhiloxCudaState(philox_state);
     }
 
     set_params_alibi(params, alibi_slopes_, batch_size, num_heads);
@@ -1030,7 +1036,7 @@ mha_bwd(const at::Tensor &dout,  // batch_size x seqlen_q x num_heads, x head_si
     if (is_dropout) {
         params.rng_state = philox_seed.data_ptr<uint64_t>();
     }
-    params.philox_args = philox_args;
+    new (params.philox_args) at::PhiloxCudaState(philox_args);
 
     set_params_alibi(params, alibi_slopes_, batch_size, num_heads);
 
@@ -1258,7 +1264,7 @@ mha_varlen_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
     if (is_dropout) {
         params.rng_state = philox_seed.data_ptr<uint64_t>();
     }
-    params.philox_args = philox_args;
+    new (params.philox_args) at::PhiloxCudaState(philox_args);
 
     set_params_alibi(params, alibi_slopes_, batch_size, num_heads);
 
