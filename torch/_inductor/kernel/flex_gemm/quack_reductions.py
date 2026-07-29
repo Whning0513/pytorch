@@ -520,6 +520,13 @@ class FlexGemmNVFP4PackForm:
 
 
 @dataclasses.dataclass(frozen=True)
+class FlexGemmToBlockedForm:
+    """Canonical logical source for one blocked-output transform."""
+
+    source: torch.fx.Node
+
+
+@dataclasses.dataclass(frozen=True)
 class FlexGemmUnsupportedReductionForm:
     """Record an unsupported reduction for shared error handling."""
 
@@ -536,6 +543,7 @@ FlexGemmStructuralForm = (
     | FlexGemmSplitForm
     | FlexGemmSelectForm
     | FlexGemmNVFP4PackForm
+    | FlexGemmToBlockedForm
     | FlexGemmUnsupportedReductionForm
 )
 
@@ -657,13 +665,20 @@ def flex_gemm_structural_form(
             for arg in shape
         )
         return FlexGemmViewForm(source, canonical_shape)
-    if node.target is torch.ops.flex_gemm.nvfp4_pack.default:
+    if node.target in (
+        torch.ops.flex_gemm.nvfp4_pack.default,
+        torch.ops.flex_gemm.to_blocked.default,
+    ):
         source = node.args[0]
         if not isinstance(source, torch.fx.Node):
             raise AssertionError(
                 f"malformed FlexGEMM output transform: {node.format_node()}"
             )
-        return FlexGemmNVFP4PackForm(source)
+        return (
+            FlexGemmNVFP4PackForm(source)
+            if node.target is torch.ops.flex_gemm.nvfp4_pack.default
+            else FlexGemmToBlockedForm(source)
+        )
     if node.target in FUNCTION_REDUCTION_TYPES:
         source = node.args[0]
         if not isinstance(source, torch.fx.Node):
