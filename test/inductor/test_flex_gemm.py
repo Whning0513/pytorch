@@ -335,6 +335,59 @@ class TestFlexGemmRuntimeHelpers(TestCase):
         mark_flex_gemm_body_gemm_node(graph_module, gemm_op)
         self.assertFalse(check(match))
 
+    def test_epilogue_graph_normalizes_structural_nodes(self):
+        import operator
+
+        from torch._inductor.kernel.flex_gemm.epilogue import FlexGemmEpilogueGraph
+        from torch._inductor.kernel.flex_gemm.quack_reductions import (
+            FlexGemmGetItemForm,
+            FlexGemmReductionForm,
+            FlexGemmSqueezeForm,
+            FlexGemmUnsupportedReductionForm,
+            FlexGemmViewForm,
+        )
+        from torch.fx.experimental.proxy_tensor import make_fx
+
+        def body(x):
+            grouped = x.view(4, 2, 4)
+            reduced = grouped.sum(dim=-1, keepdim=True)
+            maximum = torch.max(grouped, dim=-1).values
+            return reduced.squeeze(-1), maximum, grouped.var(dim=-1)
+
+        graph_module = make_fx(body)(torch.randn(4, 8))
+        nodes = {node.target: node for node in graph_module.graph.nodes}
+        forms = FlexGemmEpilogueGraph.from_graph_module(graph_module).structural_forms
+        view = forms[nodes[torch.ops.aten.view.default]]
+        self.assertEqual(
+            view,
+            FlexGemmViewForm(nodes["x_1"], (4, 2, 4)),
+        )
+        reduction = forms[nodes[torch.ops.aten.sum.dim_IntList]]
+        self.assertEqual(
+            reduction,
+            FlexGemmReductionForm(
+                nodes[torch.ops.aten.view.default], [-1], True, None, "sum"
+            ),
+        )
+        squeeze = forms[nodes[torch.ops.aten.squeeze.dim]]
+        self.assertEqual(
+            squeeze,
+            FlexGemmSqueezeForm(nodes[torch.ops.aten.sum.dim_IntList]),
+        )
+        getitem = forms[nodes[operator.getitem]]
+        self.assertEqual(
+            getitem,
+            FlexGemmGetItemForm(nodes[torch.ops.aten.max.dim], 1),
+        )
+        unsupported = forms[nodes[torch.ops.aten.var.correction]]
+        self.assertEqual(
+            unsupported,
+            FlexGemmUnsupportedReductionForm(
+                nodes[torch.ops.aten.view.default],
+                str(torch.ops.aten.var.correction),
+            ),
+        )
+
     def test_dense_config_selection_is_explicit_and_sm110_reuses_sm100(self):
         from torch._inductor.heuristics.template import (
             flex_gemm as flex_gemm_heuristics,
@@ -1426,7 +1479,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         aux = graph.placeholder("aux")
         geometry = FlexGemmLocalReduceGeometry(8, 0)
         match = FlexGemmLocalReduceMatch(aux, geometry)
-        analysis = FlexGemmLocalReduceAnalysis(FlexGemmEpilogueGraph({}))
+        analysis = FlexGemmLocalReduceAnalysis(FlexGemmEpilogueGraph({}, {}))
         with self.assertRaisesRegex(RuntimeError, "output nodes"):
             FlexGemmOutputPlan(object())
         with self.assertRaisesRegex(RuntimeError, "output nodes"):
