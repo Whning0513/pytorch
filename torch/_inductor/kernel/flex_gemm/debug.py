@@ -15,6 +15,7 @@ from torch._logging import LazyString, trace_structured
 
 from .quack_reductions import (
     FlexGemmGetItemForm,
+    FlexGemmNVFP4PackForm,
     FlexGemmPrepareSoftmaxForm,
     FlexGemmReductionForm,
     FlexGemmSelectForm,
@@ -183,6 +184,8 @@ def _format_structural_dataflow(node: torch.fx.Node, form: Any) -> str:
             operation = f"split(size={split_size}, dim={dim})"
         case FlexGemmSelectForm(dim=dim, index=index):
             operation = f"select(dim={dim}, index={index})"
+        case FlexGemmNVFP4PackForm():
+            operation = "nvfp4_pack"
         case FlexGemmUnsupportedReductionForm():
             operation = f"unsupported_reduction({node.target})"
         case _:
